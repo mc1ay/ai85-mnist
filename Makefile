@@ -53,14 +53,14 @@ COMPILER=GCC
 
 # Specify the board used
 ifeq "$(BOARD)" ""
-BOARD=EvKit_V1
+BOARD=FTHR_RevA
 endif
 
 # This is the path to the CMSIS root directory
 ifeq "$(MAXIM_PATH)" ""
-LIBS_DIR=../../../../Libraries
+LIBS_DIR=../../../Libraries
 else
-LIBS_DIR=$(subst \,/,$(subst :,,$(MAXIM_PATH))/Libraries)
+LIBS_DIR=/$(subst \,/,$(subst :,,$(MAXIM_PATH))/Libraries)
 endif
 CMSIS_ROOT=$(LIBS_DIR)/CMSIS
 
@@ -75,9 +75,19 @@ SRCS += softmax.c
 
 # Where to find source files for this test
 VPATH  = .
+ifeq "$(MAXIM_PATH)" ""
+VPATH += ../Common/
+else
+VPATH += /$(subst \,/,$(subst :,,$(MAXIM_PATH))/Examples/$(TARGET)/CNN/Common/)
+endif
 VPATH += $(CMSIS_ROOT)/Device/Maxim/$(TARGET_UC)/Source
 # Where to find header files for this test
 IPATH  = .
+ifeq "$(MAXIM_PATH)" ""
+IPATH += ../Common/
+else
+IPATH += /$(subst \,/,$(subst :,,$(MAXIM_PATH))/Examples/$(TARGET)/CNN/Common/)
+endif
 
 # Enable assertion checking for development
 PROJ_CFLAGS+=-DMXC_ASSERT_ENABLE
@@ -115,6 +125,11 @@ include $(BOARD_DIR)/board.mk
 PERIPH_DRIVER_DIR=$(LIBS_DIR)/PeriphDrivers
 include $(PERIPH_DRIVER_DIR)/periphdriver.mk
 export PERIPH_DRIVER_DIR
+
+SDHC_DRIVER_DIR=$(LIBS_DIR)/SDHC
+FAT32_DRIVER_DIR=$(SDHC_DRIVER_DIR)/ff13
+include $(FAT32_DRIVER_DIR)/fat32.mk
+include $(SDHC_DRIVER_DIR)/sdhc.mk
 
 ################################################################################
 # Include the rules for building for this target. All other makefiles should be

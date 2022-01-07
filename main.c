@@ -43,8 +43,67 @@
 #include "cnn.h"
 #include "sampledata.h"
 #include "sampleoutput.h"
+#include <mxc_device.h>
+#include <gpio.h>
+#include <uart.h>
+#include <mxc_delay.h>
+#include "ff.h"
+
+/***** Definitions *****/
+
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+
+#define MAXLEN 4096
+
+/***** Globals *****/
+FATFS* fs;      //FFat Filesystem Object
+FATFS fs_obj;
+FIL imagesfile; //FFat File Object for images
+FIL labelsfile; //FFat File Object for labels
+FRESULT err;    //FFat Result (Struct)
+FILINFO fno;    //FFat File Information Object
+DIR dir;        //FFat Directory Object
+TCHAR message[MAXLEN], directory[MAXLEN], cwd[MAXLEN], filename[MAXLEN], volume_label[24], volume = '0';
+TCHAR* FF_ERRORS[20];
+DWORD clusters_free = 0, sectors_free = 0, sectors_total = 0, volume_sn = 0;
+UINT bytes_written = 0, bytes_read = 0, mounted = 0;
+BYTE work[4096];
+mxc_gpio_cfg_t SDPowerEnablePin = {MXC_GPIO1, MXC_GPIO_PIN_12, MXC_GPIO_FUNC_OUT, MXC_GPIO_PAD_NONE, MXC_GPIO_VSSEL_VDDIO};
 
 volatile uint32_t cnn_time; // Stopwatch
+
+// SDHC Functions
+int mount()
+{
+    fs = &fs_obj;
+
+    if ((err = f_mount(fs, "", 1)) != FR_OK) {          //Mount the default drive to fs now
+        printf("Error opening SD card: %s\n", FF_ERRORS[err]);
+        f_mount(NULL, "", 0);
+    }
+    else {
+        printf("SD card mounted.\n");
+        mounted = 1;
+    }
+
+    f_getcwd(cwd, sizeof(cwd));                         //Set the Current working directory
+
+    return err;
+}
+
+int umount()
+{
+    if ((err = f_mount(NULL, "", 0)) != FR_OK) {        //Unmount the default drive from its mount point
+        printf("Error unmounting volume: %s\n", FF_ERRORS[err]);
+    }
+    else {
+        printf("SD card unmounted.\n");
+        mounted = 0;
+    }
+
+    return err;
+}
 
 void fail(void)
 {
@@ -95,8 +154,32 @@ void softmax_layer(void)
 
 int main(void)
 {
+  FF_ERRORS[0] = "FR_OK";
+  FF_ERRORS[1] = "FR_DISK_ERR";
+  FF_ERRORS[2] = "FR_INT_ERR";
+  FF_ERRORS[3] = "FR_NOT_READY";
+  FF_ERRORS[4] = "FR_NO_FILE";
+  FF_ERRORS[5] = "FR_NO_PATH";
+  FF_ERRORS[6] = "FR_INVLAID_NAME";
+  FF_ERRORS[7] = "FR_DENIED";
+  FF_ERRORS[8] = "FR_EXIST";
+  FF_ERRORS[9] = "FR_INVALID_OBJECT";
+  FF_ERRORS[10] = "FR_WRITE_PROTECTED";
+  FF_ERRORS[11] = "FR_INVALID_DRIVE";
+  FF_ERRORS[12] = "FR_NOT_ENABLED";
+  FF_ERRORS[13] = "FR_NO_FILESYSTEM";
+  FF_ERRORS[14] = "FR_MKFS_ABORTED";
+  FF_ERRORS[15] = "FR_TIMEOUT";
+  FF_ERRORS[16] = "FR_LOCKED";
+  FF_ERRORS[17] = "FR_NOT_ENOUGH_CORE";
+  FF_ERRORS[18] = "FR_TOO_MANY_OPEN_FILES";
+  FF_ERRORS[19] = "FR_INVALID_PARAMETER";
+
+  int32_t data_count = 10000;  // process 10000 images
+
   int i;
   int digs, tens;
+  int magic_number;
 
   MXC_ICC_Enable(MXC_ICC0); // Enable cache
 
@@ -109,16 +192,92 @@ int main(void)
   // DO NOT DELETE THIS LINE:
   MXC_Delay(SEC(2)); // Let debugger interrupt if needed
 
+  // Read Test Data from SDHC
+  printf("Mounting SDHC\n");
+  mount();
+
+  printf("Opening Test Images File: ");
+  if ((err = f_open(&imagesfile, "t10k-images-idx3-ubyte", FA_READ)) != FR_OK) {
+      printf("Error opening file: %s\n", FF_ERRORS[err]);
+      f_mount(NULL, "", 0);
+      return err;
+  }
+  else printf("OK\n");
+
+  printf("Checking magic number: ");
+
+  if ((err = f_read(&imagesfile, &message, 4, &bytes_read)) != FR_OK) {
+	  printf("Error reading file: %s\n", FF_ERRORS[err]);
+	  f_mount(NULL, "", 0);
+	  return err;
+  }
+  // Print result
+  else {
+	  magic_number = 0;
+	  magic_number += message[0]<<24;
+	  magic_number += message[1]<<16;
+	  magic_number += message[2]<<8;
+	  magic_number += message[3]<<0;
+	  printf("%d\n", magic_number);
+  }
+  // Advance to starting position
+  printf("Seeking to first pixel: ");
+
+  if ((err = f_lseek(&imagesfile, 16)) != FR_OK) {
+	  printf("Error %s\n", FF_ERRORS[err]);
+	  f_mount(NULL, "", 0);
+	  return err;
+  }
+  else printf("OK\n");
+
+  printf("Opening Test Labels File: ");
+  if ((err = f_open(&labelsfile, "t10k-labels-idx1-ubyte", FA_READ)) != FR_OK) {
+      printf("Error opening file: %s\n", FF_ERRORS[err]);
+      f_mount(NULL, "", 0);
+      return err;
+  }
+  else printf("OK\n");
+
+  printf("Checking magic number: ");
+
+  if ((err = f_read(&labelsfile, &message, 4, &bytes_read)) != FR_OK) {
+	  printf("Error reading file: %s\n", FF_ERRORS[err]);
+	  f_mount(NULL, "", 0);
+	  return err;
+  }
+  // Print result
+  else {
+	  magic_number = 0;
+	  magic_number += message[0]<<24;
+	  magic_number += message[1]<<16;
+	  magic_number += message[2]<<8;
+	  magic_number += message[3]<<0;
+	  printf("%d\n", magic_number);
+  }
+
+  // Advance to starting position
+  printf("Seeking to first label: ");
+
+  if ((err = f_lseek(&labelsfile, 8)) != FR_OK) {
+	  printf("Error %s\n", FF_ERRORS[err]);
+	  f_mount(NULL, "", 0);
+	  return err;
+  }
+  else printf("OK\n");
+
   // Enable peripheral, enable CNN interrupt, turn on CNN clock
   // CNN clock: 50 MHz div 1
   cnn_enable(MXC_S_GCR_PCLKDIV_CNNCLKSEL_PCLK, MXC_S_GCR_PCLKDIV_CNNCLKDIV_DIV1);
 
-  printf("\n*** CNN Inference Test ***\n");
+  printf("Running inference on %d images...\n", data_count);
 
   cnn_init(); // Bring state machine into consistent state
   cnn_load_weights(); // Load kernels
   cnn_load_bias();
   cnn_configure(); // Configure state machine
+
+  // Loop over all images
+
   load_input(); // Load data input
   cnn_start(); // Start CNN processing
 
@@ -147,18 +306,4 @@ int main(void)
 
   return 0;
 }
-
-/*
-  SUMMARY OF OPS
-  Hardware: 10,883,968 ops (10,751,808 macc; 128,576 comp; 3,584 add; 0 mul; 0 bitwise)
-    Layer 0: 470,400 ops (423,360 macc; 47,040 comp; 0 add; 0 mul; 0 bitwise)
-    Layer 1: 8,356,800 ops (8,294,400 macc; 62,400 comp; 0 add; 0 mul; 0 bitwise)
-    Layer 2: 1,954,304 ops (1,935,360 macc; 18,944 comp; 0 add; 0 mul; 0 bitwise)
-    Layer 3: 100,544 ops (96,768 macc; 192 comp; 3,584 add; 0 mul; 0 bitwise)
-    Layer 4: 1,920 ops (1,920 macc; 0 comp; 0 add; 0 mul; 0 bitwise)
-
-  RESOURCE USAGE
-  Weight memory: 70,188 bytes out of 442,368 bytes total (16%)
-  Bias memory:   10 bytes out of 2,048 bytes total (0%)
-*/
 
